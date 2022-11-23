@@ -1,3 +1,4 @@
+use crate::document::encoding::UTF_8;
 use anyhow::{anyhow, bail, Context, Error};
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
@@ -189,7 +190,8 @@ pub fn from_reader<R: std::io::Read + ?Sized>(
         let encoding = encoding.unwrap_or_else(|| {
             let mut encoding_detector = chardetng::EncodingDetector::new();
             encoding_detector.feed(&buf, is_empty);
-            encoding_detector.guess(None, true)
+            encoding_detector.guess(None, true);
+            UTF_8
         });
         let decoder = encoding.new_decoder();
 
