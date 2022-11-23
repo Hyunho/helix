@@ -2427,7 +2427,6 @@ fn jumplist_picker(cx: &mut Context) {
             .views()
             .flat_map(|(view, _)| {
                 view.jumps
-                    .get()
                     .iter()
                     .map(|(doc_id, selection)| new_meta(view, *doc_id, selection.clone()))
             })
@@ -3802,15 +3801,21 @@ fn format_selections(cx: &mut Context) {
 
     let range = ranges[0];
 
-    let edits = tokio::task::block_in_place(|| {
-        helix_lsp::block_on(language_server.text_document_range_formatting(
-            doc.identifier(),
-            range,
-            lsp::FormattingOptions::default(),
-            None,
-        ))
-    })
-    .unwrap_or_default();
+    let request = match language_server.text_document_range_formatting(
+        doc.identifier(),
+        range,
+        lsp::FormattingOptions::default(),
+        None,
+    ) {
+        Some(future) => future,
+        None => {
+            cx.editor
+                .set_error("Language server does not support range formatting");
+            return;
+        }
+    };
+
+    let edits = tokio::task::block_in_place(|| helix_lsp::block_on(request)).unwrap_or_default();
 
     let transaction = helix_lsp::util::generate_transaction_from_edits(
         doc.text(),
@@ -3954,7 +3959,10 @@ pub fn completion(cx: &mut Context) {
 
     let pos = pos_to_lsp_pos(doc.text(), cursor, offset_encoding);
 
-    let future = language_server.completion(doc.identifier(), pos, None);
+    let future = match language_server.completion(doc.identifier(), pos, None) {
+        Some(future) => future,
+        None => return,
+    };
 
     let trigger_offset = cursor;
 
@@ -4804,15 +4812,24 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
     let mut ranges = SmallVec::with_capacity(selection.len());
     let text = doc.text().slice(..);
 
+    let mut shell_output: Option<Tendril> = None;
     let mut offset = 0isize;
-
     for range in selection.ranges() {
-        let fragment = range.slice(text);
-        let (output, success) = match shell_impl(shell, cmd, pipe.then(|| fragment.into())) {
-            Ok(result) => result,
-            Err(err) => {
-                cx.editor.set_error(err.to_string());
-                return;
+        let (output, success) = if let Some(output) = shell_output.as_ref() {
+            (output.clone(), true)
+        } else {
+            let fragment = range.slice(text);
+            match shell_impl(shell, cmd, pipe.then(|| fragment.into())) {
+                Ok(result) => {
+                    if !pipe {
+                        shell_output = Some(result.0.clone());
+                    }
+                    result
+                }
+                Err(err) => {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
             }
         };
 
